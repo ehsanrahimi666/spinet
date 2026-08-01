@@ -5,7 +5,6 @@ type: software
 authors:
   - family-names: Rahimi
     given-names: Ehsan
-    orcid: "https://orcid.org/0000-0001-5715-5748"
   - family-names: Jung
     given-names: Chuleui
 version: 0.1.0

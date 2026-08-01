@@ -4,8 +4,8 @@ Title: Spatial Interaction Networks Under Environmental Change
 Version: 0.1.0
 Authors@R: c(
     person("Ehsan", "Rahimi", email = "ehsanrahimi666@gmail.com",
-           role = c("aut", "cre"), comment = c(ORCID = "0000-0001-5715-5748")),
-    person("Chuleui", "Jung", email = "cjung@gknu.ac.kr", role = "aut"))
+           role = c("aut", "cre")),
+    person("Ehsan", "Rahimi", email = "ehsanrahimi666@gmail.com", role = "aut"))
 Description: A raster-native framework for projecting ecological interaction
     networks through space and time from species distribution model output.
     The package couples per-species habitat suitability surfaces with an
