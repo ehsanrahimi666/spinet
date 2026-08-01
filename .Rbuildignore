@@ -1,0 +1,9 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^\.github$
+^data-raw$
+^README\.Rmd$
+^\.gitignore$
+^cran-comments\.md$
+^CITATION\.cff$
+^paper$

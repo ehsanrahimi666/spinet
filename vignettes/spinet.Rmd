@@ -1,0 +1,233 @@
+---
+title: "Getting started with spinet"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting started with spinet}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 7,
+                      fig.height = 4.5, dpi = 110)
+```
+
+```{r}
+library(spinet)
+set.seed(1)
+```
+
+## 1. The problem this package exists to solve
+
+Suppose you have habitat suitability surfaces for a set of plants and a set of
+pollinators, present and future, and you want to know how climate change will
+reshape the interaction network. The obvious approach is to build a local
+network in each grid cell from species co-occurrence and compare the two time
+slices.
+
+That approach cannot work, and it is worth seeing why before using anything
+else in the package.
+
+```{r}
+P <- matrix(runif(500 * 12), 500, 12)     # 12 plants,     500 cells
+A <- matrix(runif(500 * 10), 500, 10)     # 10 pollinators
+
+f_naive <- si_overlap(P, A, metaweb = NULL, method = "product", check = FALSE)
+si_degenerate(f_naive, warn = FALSE)[, 1:2]
+```
+
+The warning is not conservative. Every local matrix is
+$W_k = p_k \otimes a_k$, which has rank one:
+
+```{r}
+w <- si_local(f_naive, 1, drop = FALSE)
+c(rank        = qr(w)$rank,
+  connectance = mean(w > 0),
+  NODF        = si_nodf(w > 0),
+  H2prime     = si_h2prime(w))
+```
+
+Connectance is exactly 1, nestedness exactly 0, and $H_2'$ exactly 0 — because
+the maximum-entropy matrix with those marginals *is* the outer product of the
+marginals. Nothing about network structure can vary across space, and nothing
+can change between the present and the future. A map of any of these metrics is
+a map of species richness wearing a disguise.
+
+## 2. Adding a constraint layer
+
+The fix is to record which pairs of species can actually interact. That is the
+metaweb, or more generally a set of forbidden-link rules.
+
+```{r}
+mw <- si_simulate_metaweb(12, 10, connectance = 0.25, seed = 1)
+mw
+
+f <- si_overlap(P, A, mw, method = "product", floor = 0.05)
+f
+```
+
+Now the metrics carry information:
+
+```{r}
+m <- si_metrics(f, what = c("links", "connectance", "NODF", "H2prime"))
+summary(m)
+```
+
+Note the `floor` argument. Correlative suitability surfaces are strictly
+positive almost everywhere, so with `floor = 0` the support of `W` equals the
+metaweb in every cell and every presence-based metric returns the metaweb
+itself. `si_prune()` sets a data-driven floor if you prefer not to choose one.
+
+## 3. Building forbidden links from biology
+
+Rules multiply, so a link survives only if every rule permits it.
+
+```{r}
+ph <- si_phenology_simulate(12, 10, shift_mean = -10, shift_sd = 25, seed = 1)
+
+fl <- si_forbidden(
+  phenology  = si_rule_phenology(ph, "current", threshold = 0.3),
+  morphology = si_rule_morphology(runif(12, 5, 40), runif(10, 3, 35),
+                                  rule = "barrier"),
+  binarise   = TRUE)
+fl
+si_forbidden_partition(fl)
+```
+
+`si_rule_custom()` is the extension point: any function of the two species
+pools returning a matrix on `[0, 1]` is a valid rule.
+
+## 4. Comparing two time slices
+
+```{r}
+A1 <- si_simulate_species(12, 22, 22, prefix = "plant", seed = 2)
+B1 <- si_simulate_species(10, 22, 22, prefix = "poll",  seed = 3)
+A2 <- si_simulate_climate(A1, "decline", severity = 0.35)
+B2 <- si_simulate_climate(B1, "decline", severity = 0.35)
+
+mw2 <- si_simulate_metaweb(12, 10, 0.3, seed = 2,
+                           names_A = A1$names, names_B = B1$names)
+th  <- function(s) si_threshold(s, "fixed", 0.3)
+
+f1 <- si_overlap(th(A1), th(B1), mw2, method = "binary",
+                 scenario = "current", check = FALSE)
+f2 <- si_overlap(th(A2), th(B2), mw2, method = "binary",
+                 scenario = "future",  check = FALSE)
+
+table(si_network_extinction(f1, f2)$status)
+```
+
+Now the partition of interaction turnover:
+
+```{r}
+b <- suppressWarnings(si_beta(f1, f2))
+round(colMeans(b[, c("beta_S", "beta_WN", "beta_ST", "beta_OS")],
+               na.rm = TRUE), 6)
+```
+
+`beta_OS` is exactly zero, and `si_beta()` warned you why: both fields share
+one constraint layer. Species present at both times are linked at both times or
+at neither, so no shared species can change partners. **A static constraint
+layer makes rewiring impossible by construction, whatever the climate scenario.**
+
+```{r}
+sum(si_rewiring(f1, f2)$realised)   # new links among shared species
+```
+
+## 5. Making rewiring possible
+
+Rewiring requires the constraint layer itself to change. The clearest
+mechanism is differential phenological shift.
+
+```{r}
+gains <- function(shift_sd) {
+  ph <- si_phenology_simulate(12, 10, shift_mean = -10,
+                              shift_sd = shift_sd, seed = 4)
+  m1 <- si_metaweb(si_rule_phenology(ph, "current", 0.3)$matrix,
+                   names_A = A1$names, names_B = B1$names)
+  m2 <- si_metaweb(si_rule_phenology(ph, "future",  0.3)$matrix,
+                   names_A = A1$names, names_B = B1$names)
+  g1 <- si_overlap(th(A1), th(B1), m1, method = "binary", check = FALSE)
+  g2 <- si_overlap(th(A2), th(B2), m2, method = "binary", check = FALSE)
+  c(beta_OS = mean(si_beta(g1, g2)$beta_OS, na.rm = TRUE),
+    gains   = sum(si_rewiring(g1, g2)$realised))
+}
+
+t(vapply(c(0, 10, 30, 60), gains, numeric(2)))
+```
+
+At `shift_sd = 0` every species advances by the same ten days, phenological
+overlap is unchanged, and rewiring is again exactly zero. Rewiring is
+generated by the *variance* of the shift among species, not by its mean.
+
+## 6. Robustness, with and without constraints
+
+```{r}
+w <- mw2$matrix * matrix(runif(120, 1, 10), 12, 10)
+rew <- si_rule_morphology(runif(12, 5, 40), runif(10, 3, 35),
+                          rule = "gower")$matrix
+
+r0 <- si_robustness(w, remove = "A", n_sim = 60, seed = 1)
+r1 <- si_robustness(w, remove = "A", rewiring = matrix(1, 12, 10),
+                    n_sim = 60, seed = 1)
+r2 <- si_robustness(w, remove = "A", rewiring = rew, n_sim = 60, seed = 1)
+
+round(c(R = r0$robustness, Rw_unconstrained = r1$robustness,
+        Rw_trait_constrained = r2$robustness), 4)
+```
+
+Unconstrained partner switching is an upper bound that trait matching does not
+support.
+
+## 7. Beyond mutualism
+
+The sign structure of the interaction controls the coextinction rule and the
+direction in which spatial overlap should be read.
+
+```{r}
+si_interaction("eatenBy", level_A = "crop", level_B = "pest",
+               overlap_sign = -1)
+si_cascade_rule(si_interaction("+-"))
+```
+
+For an antagonism the resource level is *released* by the loss of its
+consumers rather than coextinct, and increasing future overlap is reported as
+a deterioration by `si_compare()` and `si_service_change()`.
+
+## 8. Virtual experiments
+
+```{r}
+des <- list(richness = 15, connectance = c(1, 0.5, 0.2),
+            severity = 0.4, grid = 12)
+ex <- suppressWarnings(si_experiment(des, replicates = 3, cells = 30, seed = 1))
+round(aggregate(cbind(d_connectance, d_NODF, beta_WN) ~ connectance,
+                ex, mean), 4)
+```
+
+Topological responses are exactly zero when the constraint layer is
+unconstrained, and grow as constraints tighten. `si_sensitivity()` decomposes
+the variance across design factors.
+
+## 9. The bundled Chilean data
+
+```{r}
+data(chile_pp)
+c(cells = nrow(chile_pp$plants_current),
+  plants = ncol(chile_pp$plants_current),
+  pollinators = ncol(chile_pp$pollinators_current),
+  links = sum(chile_pp$metaweb > 0))
+```
+
+```{r}
+P  <- si_stack(chile_pp$plants_current_bin,      level = "plant")
+A  <- si_stack(chile_pp$pollinators_current_bin, level = "pollinator")
+P$template <- A$template <- chile_pp$grid
+P$cells    <- A$cells    <- chile_pp$cells
+
+fc <- si_overlap(P, A, si_metaweb(chile_pp$metaweb), method = "binary",
+                 check = FALSE)
+summary(si_metrics(fc, what = c("links", "connectance", "NODF")))
+```
+
+The full 187 × 171 analysis is reproduced by the script in
+`system.file("scripts", "chile_case_study.R", package = "spinet")`.
