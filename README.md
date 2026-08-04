@@ -33,31 +33,102 @@ install.packages("spinet_0.1.0.tar.gz", repos = NULL, type = "source")
 # remotes::install_github("ehsanrahimi666/spinet")
 ```
 
-## Quick start
+## Quick start — runnable, no external files
+
+The package ships a real 20 x 20 Chilean plant–pollinator system, so this runs
+as-is:
 
 ```r
 library(spinet)
+data(chile_pp)
 
-# 1. read suitability surfaces (band 1 continuous, band 2 binary is a common
-#    MaxEnt/flexsdm convention)
+# 1. suitability surfaces (grid + cells make the result mappable)
+plants <- si_stack(chile_pp$plants_current_bin, level = "plant",
+                   grid = chile_pp$grid, cells = chile_pp$cells)
+polls  <- si_stack(chile_pp$pollinators_current_bin, level = "pollinator",
+                   grid = chile_pp$grid, cells = chile_pp$cells)
+
+# 2. the constraint layer
+mw <- si_metaweb(chile_pp$metaweb)          # 114 links, connectance 0.285
+
+# 3. the spatial interaction field
+f_current <- si_overlap(plants, polls, mw, method = "binary",
+                        scenario = "current")
+
+# 4. per-cell network metrics, mapped
+m <- si_metrics(f_current, what = c("links", "connectance", "NODF", "H2prime"))
+summary(m)
+terra::plot(si_metric_map(m, c("links", "connectance")))
+
+# 5. compare with the future projection
+plants_f <- si_stack(chile_pp$plants_future_bin, level = "plant",
+                     grid = chile_pp$grid, cells = chile_pp$cells)
+polls_f  <- si_stack(chile_pp$pollinators_future_bin, level = "pollinator",
+                     grid = chile_pp$grid, cells = chile_pp$cells)
+f_future <- si_overlap(plants_f, polls_f, mw, method = "binary",
+                       scenario = "future")
+
+si_beta(f_current, f_future)                # beta_WN = beta_ST + beta_OS
+table(si_network_extinction(f_current, f_future)$status)
+```
+
+Expected output of the last two lines:
+
+```
+ beta_S beta_WN beta_ST beta_OS
+ 0.4775  0.5837  0.4321  0.0000     <- rewiring is zero: the layer is static
+
+ persists   extinct colonised    absent
+      485       110        23      2182
+```
+
+## The same thing from GeoTIFFs
+
+`chile_pp` is a matrix, so it cannot show the raster reading path. The package
+also ships the same subset as GeoTIFFs:
+
+```r
+library(terra)
+si_example_rasters("all")          # 8 rasters + study-area polygon + metaweb
+
+region <- vect(si_example_rasters("region"))
+P  <- si_stack(si_example_rasters("plants_current_binary"),
+               mask = region, level = "plant")
+A  <- si_stack(si_example_rasters("pollinators_current_binary"),
+               mask = region, level = "pollinator")
+mw <- si_metaweb(as.matrix(read.csv(si_example_rasters("metaweb"),
+                                    row.names = 1)))
+
+f <- si_overlap(P, A, mw, method = "binary")
+plot(si_metric_map(si_metrics(f, what = c("links", "connectance"))))
+```
+
+`si_stack()` accepts either convention and tells them apart automatically: a
+directory or several file paths means one file per species, with `band`
+selecting the variant inside each; a single multi-layer raster means the layers
+are the species.
+
+## Using your own species distribution models
+
+Replace step 1 with paths to your own rasters. This is a **template** — the
+paths, the study-area polygon and the interaction table are yours to supply:
+
+```r
+study_area <- terra::vect("gis/study_area.shp")
+obs        <- read.csv("data/observed_interactions.csv")   # edge list or matrix
+
+# band 1 = continuous suitability, band 2 = thresholded binary, a common
+# MaxEnt / flexsdm convention. Use the same `mask` for every stack so that
+# cell i means the same place in each.
 plants <- si_stack("sdm/plants_current",      band = 2, mask = study_area)
 polls  <- si_stack("sdm/pollinators_current", band = 2, mask = study_area)
 
-# 2. build a constraint layer
-mw <- si_metaweb(observed_interactions, names_A = plants$names,
-                                        names_B = polls$names)
-
-# 3. the spatial interaction field
-f <- si_overlap(plants, polls, mw, method = "binary")
-
-# 4. per-cell network metrics, mapped
-m <- si_metrics(f, what = c("links", "connectance", "NODF", "H2prime"))
-terra::plot(si_metric_map(m))
-
-# 5. compare with a future projection
-b <- si_beta(f_current, f_future)     # β_WN = β_ST + β_OS
-si_network_extinction(f_current, f_future)
+mw <- si_metaweb(obs, names_A = plants$names, names_B = polls$names)
+f  <- si_overlap(plants, polls, mw, method = "binary")
 ```
+
+A complete worked script for a 187 x 171 system is at
+`system.file("scripts", "chile_case_study.R", package = "spinet")`.
 
 ## All six interaction sign structures
 

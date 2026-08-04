@@ -7,3 +7,5 @@
 ^cran-comments\.md$
 ^CITATION\.cff$
 ^paper$
+^inst/scripts/make_figures\.R$
+^inst/scripts/chile_analysis\.R$

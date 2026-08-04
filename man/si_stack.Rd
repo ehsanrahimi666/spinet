@@ -12,6 +12,8 @@ si_stack(
   level = "A",
   na_value = 0,
   pattern = "\\\\.(tif|tiff|grd|img|asc)$",
+  grid = NULL,
+  cells = NULL,
   quiet = FALSE
 )
 }
@@ -20,11 +22,12 @@ si_stack(
 character vector of raster file paths; a `SpatRaster` with one layer per
 species; or a numeric matrix with cells in rows and species in columns.}
 
-\item{band}{Integer or character. Which band of each file to read. Many SDM
-workflows write a continuous suitability band and a thresholded binary
-band into the same GeoTIFF; use `band = 1` (or `"max"`) for the
-continuous surface and `band = 2` (or `"sensitivity"`) for the binary one.
-Ignored when `x` is a matrix.}
+\item{band}{Integer or character. Which band of each file to read when there
+is one file per species. Many SDM workflows write a continuous suitability
+band and a thresholded binary band into the same GeoTIFF; use `band = 1`
+(or `"max"`) for the continuous surface and `band = 2` (or
+`"sensitivity"`) for the binary one. Ignored when `x` is a matrix, or when
+`x` is a single multi-layer raster whose layers are the species.}
 
 \item{mask}{Optional. A `SpatVector`, `SpatRaster` or logical vector used to
 restrict the analysis to a study area. Cells outside the mask are dropped
@@ -43,6 +46,13 @@ output.}
 \item{pattern}{Regular expression used to select files when `x` is a
 directory. Default matches GeoTIFFs.}
 
+\item{grid}{Optional [si_grid()] (or `SpatRaster`) describing the analysis
+grid. Only needed for matrix input that should still be mappable, for
+example the bundled [chile_pp] data.}
+
+\item{cells}{Optional integer vector of raster cell indices matching the
+rows of a matrix input. Supply together with `grid`.}
+
 \item{quiet}{Logical. Suppress progress messages.}
 }
 \value{
@@ -57,6 +67,12 @@ raster stack: it extracts a cells-by-species matrix once and keeps a
 template raster for writing results back to disk.
 }
 \details{
+Two file conventions are supported and distinguished automatically. If `x`
+is a directory, or a vector of several paths, each file is taken to be one
+species and `band` selects which variant to read from it. If `x` is a single
+raster with more than one layer, the layers are taken to be the species and
+`band` is ignored.
+
 All rasters must share one grid. The function checks extent, resolution and
 CRS across every file and fails with an informative message naming the first
 offender rather than silently recycling values.
@@ -72,6 +88,12 @@ m <- matrix(runif(200 * 6), nrow = 200,
             dimnames = list(NULL, paste0("plant_", 1:6)))
 st <- si_stack(m, level = "plant")
 st
+
+# Mappable matrix input: the bundled Chilean subset
+data(chile_pp)
+P <- si_stack(chile_pp$plants_current_bin, level = "plant",
+              grid = chile_pp$grid, cells = chile_pp$cells)
+P
 
 # From a SpatRaster
 library(terra)

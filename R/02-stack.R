@@ -12,11 +12,12 @@
 #' @param x One of: a directory path containing one raster per species; a
 #'   character vector of raster file paths; a `SpatRaster` with one layer per
 #'   species; or a numeric matrix with cells in rows and species in columns.
-#' @param band Integer or character. Which band of each file to read. Many SDM
-#'   workflows write a continuous suitability band and a thresholded binary
-#'   band into the same GeoTIFF; use `band = 1` (or `"max"`) for the
-#'   continuous surface and `band = 2` (or `"sensitivity"`) for the binary one.
-#'   Ignored when `x` is a matrix.
+#' @param band Integer or character. Which band of each file to read when there
+#'   is one file per species. Many SDM workflows write a continuous suitability
+#'   band and a thresholded binary band into the same GeoTIFF; use `band = 1`
+#'   (or `"max"`) for the continuous surface and `band = 2` (or
+#'   `"sensitivity"`) for the binary one. Ignored when `x` is a matrix, or when
+#'   `x` is a single multi-layer raster whose layers are the species.
 #' @param mask Optional. A `SpatVector`, `SpatRaster` or logical vector used to
 #'   restrict the analysis to a study area. Cells outside the mask are dropped
 #'   entirely rather than set to `NA`, which is what makes continental
@@ -29,6 +30,11 @@
 #'   output.
 #' @param pattern Regular expression used to select files when `x` is a
 #'   directory. Default matches GeoTIFFs.
+#' @param grid Optional [si_grid()] (or `SpatRaster`) describing the analysis
+#'   grid. Only needed for matrix input that should still be mappable, for
+#'   example the bundled [chile_pp] data.
+#' @param cells Optional integer vector of raster cell indices matching the
+#'   rows of a matrix input. Supply together with `grid`.
 #' @param quiet Logical. Suppress progress messages.
 #'
 #' @return An object of class `si_stack`: a list with the cells-by-species
@@ -36,6 +42,12 @@
 #'   zero-layer `template` (a `SpatRaster`) or `NULL` for matrix input.
 #'
 #' @details
+#' Two file conventions are supported and distinguished automatically. If `x`
+#' is a directory, or a vector of several paths, each file is taken to be one
+#' species and `band` selects which variant to read from it. If `x` is a single
+#' raster with more than one layer, the layers are taken to be the species and
+#' `band` is ignored.
+#'
 #' All rasters must share one grid. The function checks extent, resolution and
 #' CRS across every file and fails with an informative message naming the first
 #' offender rather than silently recycling values.
@@ -52,6 +64,12 @@
 #' st <- si_stack(m, level = "plant")
 #' st
 #'
+#' # Mappable matrix input: the bundled Chilean subset
+#' data(chile_pp)
+#' P <- si_stack(chile_pp$plants_current_bin, level = "plant",
+#'               grid = chile_pp$grid, cells = chile_pp$cells)
+#' P
+#'
 #' # From a SpatRaster
 #' library(terra)
 #' r <- rast(nrows = 20, ncols = 20, nlyrs = 4)
@@ -62,7 +80,7 @@
 #' @export
 si_stack <- function(x, band = 1, mask = NULL, names = NULL, level = "A",
                      na_value = 0, pattern = "\\.(tif|tiff|grd|img|asc)$",
-                     quiet = FALSE) {
+                     grid = NULL, cells = NULL, quiet = FALSE) {
 
   if (is.matrix(x) || is.data.frame(x)) {
     v <- as.matrix(x)
@@ -70,7 +88,12 @@ si_stack <- function(x, band = 1, mask = NULL, names = NULL, level = "A",
     nm <- if (!is.null(names)) names else colnames(v)
     if (is.null(nm)) nm <- paste0(level, "_", seq_len(ncol(v)))
     v[is.na(v)] <- na_value
-    return(new_si_stack(v, .norm_names(nm), seq_len(nrow(v)), NULL, level))
+    if (!is.null(cells) && length(cells) != nrow(v))
+      stop("`cells` has length ", length(cells), " but the matrix has ",
+           nrow(v), " rows.", call. = FALSE)
+    return(new_si_stack(v, .norm_names(nm),
+                        if (is.null(cells)) seq_len(nrow(v)) else as.integer(cells),
+                        si_grid(grid), level))
   }
 
   if (inherits(x, "SpatRaster")) {
@@ -84,14 +107,36 @@ si_stack <- function(x, band = 1, mask = NULL, names = NULL, level = "A",
       sort(f)
     } else {
       miss <- x[!file.exists(x)]
-      if (length(miss))
+      if (length(miss)) {
+        if (length(x) == 1L)
+          stop("Path not found: '", x, "'\n",
+               "  `x` should be a directory containing one raster per species, ",
+               "a vector of raster file paths, a SpatRaster, or a matrix.\n",
+               "  Current working directory is: ", getwd(), "\n",
+               "  For a runnable example with no external files, see ",
+               "?si_stack or data(chile_pp).", call. = FALSE)
         stop("File(s) not found: ", paste(utils::head(miss, 3), collapse = ", "),
              if (length(miss) > 3) " ..." else "", call. = FALSE)
+      }
       x
     }
-    if (!quiet) message("Reading ", length(files), " ", level, " rasters ...")
-    r <- .read_band_stack(files, band)
-    if (is.null(names)) names <- tools::file_path_sans_ext(basename(files))
+    # Two conventions are supported and disambiguated here:
+    #   many files, one per species  -> `band` selects the variant in each
+    #   one file, many layers        -> the layers are the species
+    single_multilayer <- length(files) == 1L && terra::nlyr(terra::rast(files)) > 1L
+    if (single_multilayer) {
+      r <- terra::rast(files)
+      if (!identical(band, 1) && !quiet)
+        message("`x` is a single multi-layer raster, so its layers are taken ",
+                "as species and `band` is ignored.")
+      if (!quiet) message("Reading ", terra::nlyr(r), " ", level,
+                          " layers from one raster ...")
+      if (is.null(names)) names <- base::names(r)
+    } else {
+      if (!quiet) message("Reading ", length(files), " ", level, " rasters ...")
+      r <- .read_band_stack(files, band)
+      if (is.null(names)) names <- tools::file_path_sans_ext(basename(files))
+    }
   } else {
     stop("`x` must be a directory, a vector of file paths, a SpatRaster, ",
          "or a matrix.", call. = FALSE)
@@ -492,4 +537,60 @@ si_grid_rast <- function(g) {
 print.si_grid <- function(x, ...) {
   cat("<si_grid> ", x$dim[1], " x ", x$dim[2], "   ", x$crs_code, "\n", sep = "")
   invisible(x)
+}
+
+
+#' Paths to the bundled example rasters
+#'
+#' The package ships a small multi-band raster subset of the Chilean system:
+#' 20 plants and 20 pollinators, present and 2070, each as a continuous
+#' suitability surface and a thresholded binary surface, plus the study-area
+#' polygon and the documented metaweb. These files exist so that the raster
+#' reading path can be demonstrated and tested without external data;
+#' [chile_pp] holds the same information as matrices.
+#'
+#' @param what Which file to locate: `"plants_current"`, `"plants_future"`,
+#'   `"pollinators_current"`, `"pollinators_future"` (multi-layer GeoTIFFs of
+#'   continuous suitability), the corresponding `"_binary"` versions,
+#'   `"region"` (the study-area polygon) or `"metaweb"` (a CSV). `"all"`
+#'   returns every path.
+#' @return A file path, or a named character vector when `what = "all"`.
+#' @examples
+#' si_example_rasters("all")
+#'
+#' library(terra)
+#' r <- rast(si_example_rasters("plants_current"))
+#' c(layers = terra::nlyr(r), cells = terra::ncell(r))
+#'
+#' # the raster workflow, end to end, with no external files
+#' region <- terra::vect(si_example_rasters("region"))
+#' P <- si_stack(si_example_rasters("plants_current_binary"),
+#'               mask = region, level = "plant", quiet = TRUE)
+#' A <- si_stack(si_example_rasters("pollinators_current_binary"),
+#'               mask = region, level = "pollinator", quiet = TRUE)
+#' mw <- si_metaweb(as.matrix(read.csv(si_example_rasters("metaweb"),
+#'                                     row.names = 1)))
+#' f <- si_overlap(P, A, mw, method = "binary", check = FALSE)
+#' f
+#' @seealso [chile_pp], [si_stack()], [si_common_mask()]
+#' @export
+si_example_rasters <- function(what = "all") {
+  files <- c(
+    plants_current             = "plants_current_suitability.tif",
+    plants_future              = "plants_future_suitability.tif",
+    pollinators_current        = "pollinators_current_suitability.tif",
+    pollinators_future         = "pollinators_future_suitability.tif",
+    plants_current_binary      = "plants_current_binary.tif",
+    plants_future_binary       = "plants_future_binary.tif",
+    pollinators_current_binary = "pollinators_current_binary.tif",
+    pollinators_future_binary  = "pollinators_future_binary.tif",
+    region                     = "chile.gpkg",
+    metaweb                    = "chile_metaweb.csv")
+  paths <- vapply(files, function(f)
+    system.file("extdata", f, package = "spinet"), character(1))
+  if (identical(what, "all")) return(paths)
+  if (!what %in% names(paths))
+    stop("Unknown file '", what, "'. Available: ",
+         paste(names(paths), collapse = ", "), call. = FALSE)
+  unname(paths[what])
 }
