@@ -1,0 +1,35 @@
+Package: spinet
+Type: Package
+Title: Spatial Interaction Networks Under Environmental Change
+Version: 0.1.0
+Authors@R: c(
+    person("Ehsan", "Rahimi", email = "ehsanrahimi666@gmail.com",
+           role = c("aut", "cre")),
+    person("Chuleui", "Jung", email = "cjung@gknu.ac.kr", role = "aut"))
+Description: A raster-native framework for projecting ecological interaction
+    networks through space and time from species distribution model output.
+    The package couples per-species habitat suitability surfaces with an
+    interaction constraint layer (a metaweb and/or trait-, phenology- and
+    elevation-based forbidden-link rules) to construct spatially explicit
+    interaction networks, and provides tools for network metrics, interaction
+    beta-diversity partitioning sensu Poisot and others (2012)
+    <doi:10.1111/ele.12002>, rewiring, coextinction robustness with rewiring
+    sensu Vizentin-Bugoni and others (2020) <doi:10.1111/2041-210X.13306>,
+    and factorial simulation experiments. All six interaction sign structures
+    (mutualism, antagonism, commensalism, amensalism, competition,
+    neutralism) are supported through a Relations Ontology-based interaction
+    vocabulary compatible with Global Biotic Interactions. The package
+    consumes species distribution model output; it does not fit
+    distribution models.
+License: GPL-3 + file LICENSE
+Encoding: UTF-8
+Depends: R (>= 4.1.0)
+Imports: terra (>= 1.7), stats, utils, grDevices, graphics, parallel
+Suggests: sf, igraph, testthat (>= 3.0.0), knitr, rmarkdown, ggplot2,
+    bipartite, vegan, viridisLite
+LazyData: true
+RoxygenNote: 7.3.1
+URL: https://github.com/ehsanrahimi666/spinet
+BugReports: https://github.com/ehsanrahimi666/spinet/issues
+Config/testthat/edition: 3
+VignetteBuilder: knitr
