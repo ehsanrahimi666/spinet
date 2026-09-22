@@ -1,111 +1,69 @@
-# ---------------------------------------------------------------------------
-# spinet: Chile plant-pollinator case study
-#
-# Reproduces the empirical component of the analysis: 187 plants x 171
-# pollinators, current and 2070 (SSP585), with and without the observed
-# metaweb, on both the binary and continuous pathways.
-#
-# Inputs expected (edit `root`):
-#   <root>/plants_current/*.tif        187 GeoTIFFs, band 1 = continuous,
-#   <root>/plants_future/*.tif             band 2 = binary (max-sensitivity)
-#   <root>/pollinators_current/*.tif   171 GeoTIFFs
-#   <root>/pollinators_future/*.tif
-#   <root>/Reference_matrix.csv        observed metaweb, 187 x 171
-#   <root>/chile_polygon.shp           study-area mask
-#   <root>/pollination_catalogue.csv   Muschett & Fonturbel catalogue (";" sep)
-# ---------------------------------------------------------------------------
-
-library(spinet)
-library(terra)
-
-root <- Sys.getenv("SPINET_CHILE", unset = "~/chile")
-out  <- file.path(root, "spinet_output")
+## ---------------------------------------------------------------------------
+## Supplementary Code S2. Complete Chilean analysis (187 plants x 171
+## pollinators, 2,800 cells, present day and 2070 under SSP5-8.5).
+##
+## Set CHILE_DATA to a directory containing:
+##   plants_current/, plants_future/, pollinators_current/, pollinators_future/
+##       one two-band GeoTIFF per species (band 1 continuous, band 2 binary),
+##       named after the species
+##   Reference_matrix.csv   plant-by-pollinator matrix of documented links
+##   chile_polygon.shp      national boundary used as the analysis mask
+##   pollination_catalogue.csv   Muschett and Fonturbel (2022), ";"-separated
+## Results are written to ANALYSIS_OUT (default "analysis_output").
+## ---------------------------------------------------------------------------
+suppressMessages({library(spinet); library(terra)})
+root <- Sys.getenv("CHILE_DATA", "chile_data")
+out  <- Sys.getenv("ANALYSIS_OUT", "analysis_output")
+if (!dir.exists(root)) stop("Set CHILE_DATA to the input directory (see header).")
 dir.create(out, showWarnings = FALSE, recursive = TRUE)
-
-# --- 1. read -----------------------------------------------------------------
 chile <- vect(file.path(root, "chile_polygon.shp"))
 
-read_level <- function(folder, band)
-  si_stack(file.path(root, folder), band = band, mask = chile,
-           level = folder, quiet = TRUE)
+## Step 1: suitability stacks (binary band) with one mask for all four
+rd <- function(d, lvl) si_stack(file.path(root, d), band = 2, mask = chile, level = lvl, quiet = TRUE)
+P_now <- rd("plants_current", "plant");      P_fut <- rd("plants_future", "plant")
+A_now <- rd("pollinators_current", "pollinator"); A_fut <- rd("pollinators_future", "pollinator")
 
-# band 1 = continuous cloglog suitability; band 2 = binary (max sensitivity)
-Pc_c <- read_level("plants_current", 1);      Pc_b <- read_level("plants_current", 2)
-Pf_c <- read_level("plants_future", 1);       Pf_b <- read_level("plants_future", 2)
-Ac_c <- read_level("pollinators_current", 1); Ac_b <- read_level("pollinators_current", 2)
-Af_c <- read_level("pollinators_future", 1);  Af_b <- read_level("pollinators_future", 2)
+## Step 2: constraint layer from the documented interactions
+web <- as.matrix(read.csv(file.path(root, "Reference_matrix.csv"), row.names = 1))
+mw  <- si_metaweb(web, names_A = P_now$names, names_B = A_now$names)
+cat("documented links:", sum(mw$matrix > 0), "| connectance:", round(si_connectance(mw), 4), "\n")
 
-# --- 2. the observed metaweb -------------------------------------------------
-R <- as.matrix(read.csv(file.path(root, "Reference_matrix.csv"), row.names = 1))
-mw <- si_metaweb(R, names_A = Pc_c$names, names_B = Ac_c$names)
-message(sprintf("observed metaweb: %d links, connectance %.4f",
-                sum(mw$matrix > 0), si_connectance(mw)))
+## Step 3: present-day and 2070 fields, same constraint layer
+pol   <- si_interaction("pollinatedBy", "plant", "pollinator")
+f_now <- si_overlap(P_now, A_now, mw, method = "binary", interaction = pol, scenario = "present", check = FALSE)
+f_fut <- si_overlap(P_fut, A_fut, mw, method = "binary", interaction = pol, scenario = "2070", check = FALSE)
 
-# an unconstrained layer, for the contrast
-mw0 <- si_metaweb(NULL, names_A = Pc_c$names, names_B = Ac_c$names)
+## Step 4: per-cell metrics and maps
+what  <- c("links", "connectance", "NODF")
+m_now <- si_metrics(f_now, what = what); m_fut <- si_metrics(f_fut, what = what)
+writeRaster(si_metric_map(m_now, what), file.path(out, "metrics_present.tif"), overwrite = TRUE)
+writeRaster(si_metric_map(m_fut, what), file.path(out, "metrics_2070.tif"), overwrite = TRUE)
 
-# --- 3. four analytical pathways --------------------------------------------
-pol <- si_interaction("pollinatedBy", "plant", "pollinator")
-make <- function(P, A, M, meth, fl, sc)
-  si_overlap(P, A, M, method = meth, floor = fl, interaction = pol,
-             scenario = sc, check = FALSE)
+## Step 5: change between periods
+b  <- si_beta(f_now, f_fut)
+rw <- si_rewiring(f_now, f_fut)
+ex <- si_network_extinction(f_now, f_fut)
+write.csv(b, file.path(out, "beta_partition.csv"), row.names = FALSE)
+write.csv(ex, file.path(out, "network_fate.csv"), row.names = FALSE)
 
-fields <- list(
-  # A: published binary framework, no constraint layer
-  A_cur = make(Pc_b, Ac_b, mw0, "binary",  0,    "current"),
-  A_fut = make(Pf_b, Af_b, mw0, "binary",  0,    "future"),
-  # B: published continuous framework, no constraint layer
-  B_cur = make(Pc_c, Ac_c, mw0, "product", 0,    "current"),
-  B_fut = make(Pf_c, Af_c, mw0, "product", 0,    "future"),
-  # C: binary x observed metaweb
-  C_cur = make(Pc_b, Ac_b, mw,  "binary",  0,    "current"),
-  C_fut = make(Pf_b, Af_b, mw,  "binary",  0,    "future"),
-  # D: continuous x observed metaweb, pruned
-  D_cur = make(Pc_c, Ac_c, mw,  "product", 0.05, "current"),
-  D_fut = make(Pf_c, Af_c, mw,  "product", 0.05, "future"))
+summ <- data.frame(
+  metric  = c("links per cell", "connectance", "NODF"),
+  present = c(mean(m_now$links), mean(m_now$connectance, na.rm = TRUE), mean(m_now$NODF, na.rm = TRUE)),
+  y2070   = c(mean(m_fut$links), mean(m_fut$connectance, na.rm = TRUE), mean(m_fut$NODF, na.rm = TRUE)))
+print(summ); print(table(ex$status))
 
-# --- 4. metrics, turnover and extinction ------------------------------------
-metrics <- c("links", "connectance", "NODF", "H2prime", "H2_gap", "evenness")
-res <- lapply(c("A", "B", "C", "D"), function(p) {
-  f1 <- fields[[paste0(p, "_cur")]]; f2 <- fields[[paste0(p, "_fut")]]
-  m1 <- si_metrics(f1, what = metrics); m2 <- si_metrics(f2, what = metrics)
-  bb <- suppressWarnings(si_beta(f1, f2))
-  rw <- si_rewiring(f1, f2)
-  ex <- si_network_extinction(f1, f2)
-  data.frame(pathway = p,
-             t(colMeans(m1[, metrics], na.rm = TRUE)),
-             t(colMeans(m2[, metrics], na.rm = TRUE)) -
-               t(colMeans(m1[, metrics], na.rm = TRUE)),
-             beta_WN = mean(bb$beta_WN, na.rm = TRUE),
-             beta_ST = mean(bb$beta_ST, na.rm = TRUE),
-             beta_OS = mean(bb$beta_OS, na.rm = TRUE),
-             rewiring_gains = sum(rw$realised, na.rm = TRUE),
-             networks_current = sum(ex$status %in% c("persists", "extinct")),
-             networks_extinct = sum(ex$status == "extinct"))
-})
-tab <- do.call(rbind, res)
-write.csv(tab, file.path(out, "chile_pathway_comparison.csv"), row.names = FALSE)
-print(tab)
+## Unconstrained comparison: co-occurrence treated as interaction
+f0 <- si_overlap(P_now, A_now, NULL, method = "binary", interaction = pol, check = FALSE)
+L0 <- vapply(seq_len(f0$n_cells), function(k) sum(si_local(f0, k, drop = FALSE) > 0), numeric(1))
+cat(sprintf("unconstrained links per cell %.1f (%.1f-fold the constrained value)\n",
+            mean(L0), mean(L0) / mean(m_now$links)))
 
-# --- 5. maps -----------------------------------------------------------------
-mC <- si_metrics(fields$C_cur, what = metrics)
-writeRaster(si_metric_map(mC), file.path(out, "chile_metrics_current.tif"),
-            overwrite = TRUE)
-ex <- si_network_extinction(fields$C_cur, fields$C_fut)
-r <- rast(fields$C_cur$template); r[fields$C_cur$cells] <- as.integer(ex$status)
-writeRaster(r, file.path(out, "chile_network_status.tif"), overwrite = TRUE)
-
-# --- 6. derived phenology from the catalogue --------------------------------
+## Phenology from dated records and its internal check
 cat_file <- file.path(root, "pollination_catalogue.csv")
 if (file.exists(cat_file)) {
-  ph <- si_phenology_from_records(read.csv(cat_file, sep = ";"),
-                                  species_A = "scientificNamePlants",
-                                  species_B = "scientificNameAnimals",
-                                  date = "eventDate",
-                                  names_A = Pc_c$names, names_B = Ac_c$names)
-  saveRDS(ph, file.path(out, "chile_phenology.rds"))
-  message(sprintf("derived phenology: %d plants, %d pollinators dated",
-                  sum(rowSums(ph$A) > 0), sum(rowSums(ph$B) > 0)))
+  txt <- iconv(readLines(cat_file, warn = FALSE), "UTF-8", "UTF-8", sub = "")
+  rec <- read.csv(textConnection(txt), sep = ";")
+  ph  <- si_phenology_from_records(rec, "scientificNamePlants", "scientificNameAnimals",
+                                   "eventDate", names_A = P_now$names, names_B = A_now$names)
+  print(si_phenology_check(ph, mw))
 }
-
-message("done -> ", out)

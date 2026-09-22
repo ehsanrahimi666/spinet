@@ -266,6 +266,9 @@ si_simulate_climate <- function(stack,
          "  Supply `dims = c(nrow, ncol)` or use a stack from ",
          "si_simulate_species().", call. = FALSE)
   nr <- d[1]; nc <- d[2]
+  if (scenario %in% c("shift", "upslope") && abs(round(distance)) >= nr)
+    stop("`distance` (", distance, ") must be smaller than the number of grid ",
+         "rows (", nr, ").", call. = FALSE)
   if (nr * nc != nrow(v))
     stop("`dims` (", nr, " x ", nc, ") does not match the ", nrow(v),
          " cells in the stack.", call. = FALSE)
@@ -479,7 +482,7 @@ print.si_phenology_records <- function(x, ...) {
 #' si_phenology_check(ph, mw)
 #' @export
 si_phenology_check <- function(phenology, metaweb) {
-  M <- if (inherits(metaweb, "si_metaweb")) metaweb$matrix else as.matrix(metaweb)
+  M <- .constraint_matrix(metaweb)
   A <- phenology$A; B <- phenology$B
   ij <- which(M > 0, arr.ind = TRUE)
   dated <- colSums(A) > 0; datedB <- colSums(B) > 0

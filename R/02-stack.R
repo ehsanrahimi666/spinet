@@ -82,6 +82,11 @@ si_stack <- function(x, band = 1, mask = NULL, names = NULL, level = "A",
                      na_value = 0, pattern = "\\.(tif|tiff|grd|img|asc)$",
                      grid = NULL, cells = NULL, quiet = FALSE) {
 
+  if (!is.numeric(na_value) || length(na_value) != 1L || !is.finite(na_value))
+    stop("`na_value` must be a single finite number (usually 0): it replaces ",
+         "cells with no prediction, and NA cannot be used in network ",
+         "calculations.", call. = FALSE)
+
   if (is.matrix(x) || is.data.frame(x)) {
     v <- as.matrix(x)
     storage.mode(v) <- "double"
@@ -155,6 +160,18 @@ si_stack <- function(x, band = 1, mask = NULL, names = NULL, level = "A",
 }
 
 new_si_stack <- function(values, names, cells, template, level) {
+  dup <- unique(names[duplicated(names)])
+  if (length(dup))
+    stop("Duplicated species name(s) after normalisation: ",
+         paste(utils::head(dup, 5), collapse = ", "),
+         if (length(dup) > 5) " ..." else "",
+         ".\n  Each layer must correspond to one species.", call. = FALSE)
+  rng <- suppressWarnings(range(values, finite = TRUE))
+  if (all(is.finite(rng)) && (rng[1] < 0 || rng[2] > 1))
+    warning("Suitability values in level '", level, "' span [",
+            signif(rng[1], 3), ", ", signif(rng[2], 3), "], outside [0, 1]. ",
+            "Combination rules and thresholds assume values on [0, 1]; ",
+            "rescale raw model outputs before use.", call. = FALSE)
   colnames(values) <- names
   structure(list(values = values, names = names, cells = cells,
                  template = template, level = level,
@@ -284,9 +301,25 @@ si_metaweb <- function(x = NULL, names_A = NULL, names_B = NULL,
       nA <- if (is.null(names_A)) rownames(m) else .norm_names(names_A)
       nB <- if (is.null(names_B)) colnames(m) else .norm_names(names_B)
       out <- matrix(0, length(nA), length(nB), dimnames = list(nA, nB))
-      ri <- match(nA, rownames(m)); ci <- match(nB, colnames(m))
+      ri <- match(tolower(nA), tolower(rownames(m)))
+      ci <- match(tolower(nB), tolower(colnames(m)))
       okr <- !is.na(ri); okc <- !is.na(ci)
       out[okr, okc] <- m[ri[okr], ci[okc], drop = FALSE]
+      lost <- sum(m > 0) - sum(out > 0)
+      unmatched <- c(if (!is.null(names_A)) nA[!okr], if (!is.null(names_B)) nB[!okc])
+      unused <- c(setdiff(tolower(rownames(m)), tolower(nA)),
+                  setdiff(tolower(colnames(m)), tolower(nB)))
+      if (length(unmatched) || lost > 0)
+        warning(length(unmatched), " species have no row or column in the ",
+                "interaction matrix and were given no links",
+                if (length(unmatched)) paste0(" (e.g. ",
+                  paste(utils::head(unmatched, 3), collapse = ", "), ")") else "",
+                "; ", lost, " documented link(s) could not be placed",
+                if (length(unused)) paste0(" (unmatched names in the matrix, e.g. ",
+                  paste(utils::head(unused, 3), collapse = ", "), ")") else "",
+                ".\n  Check spelling with si_match_names().", call. = FALSE)
+      attr(out, "reconciliation") <- list(unmatched = unmatched,
+                                          unused = unused, links_lost = lost)
       m <- out
     }
   }
@@ -326,7 +359,7 @@ print.si_metaweb <- function(x, ...) {
 #' si_connectance(matrix(c(1, 0, 1, 1), 2, 2))
 #' @export
 si_connectance <- function(x) {
-  m <- if (inherits(x, "si_metaweb")) x$matrix else as.matrix(x)
+  m <- .constraint_matrix(x)
   mean(m > 0)
 }
 
@@ -335,19 +368,31 @@ si_connectance <- function(x) {
 # internal helpers
 # ---------------------------------------------------------------------------
 
+# Matrix of a constraint layer, whether supplied as an si_forbidden object,
+# an si_metaweb object or a plain matrix.
+.constraint_matrix <- function(x) {
+  if (inherits(x, "si_forbidden")) x <- x$metaweb
+  if (inherits(x, "si_metaweb")) x$matrix else as.matrix(x)
+}
+
 .norm_names <- function(x) {
   x <- as.character(x)
-  # Real ecological data frequently carries invalid bytes and non-breaking
-  # spaces from spreadsheets. Drop invalid bytes first so that downstream
-  # regular expressions cannot fail on them.
+  # Species names reach this function from file names, spreadsheet headers and
+  # database exports, and the same name is routinely spelled differently by
+  # each. Invalid bytes are dropped first so that later regular expressions
+  # cannot fail on them.
   x <- iconv(x, from = "UTF-8", to = "UTF-8", sub = "")
   x[is.na(x)] <- ""
-  x <- gsub("\xc2\xa0", " ", x, useBytes = TRUE)   # NBSP
-  x <- gsub("\xe2\x80\x87|\xe2\x80\xaf|\xe2\x81\x9f|\xe3\x80\x80",
-            " ", x, useBytes = TRUE)                # figure/narrow/ideographic
-  x <- trimws(x)
-  x <- gsub("[[:space:]]+", "_", x)
-  sub("_+$", "", x)
+  # Unicode spaces (no-break, figure, narrow, ideographic) and their escaped
+  # forms, which appear when a UTF-8 file is read in a non-UTF-8 locale.
+  x <- gsub("\xc2\xa0|\xe2\x80\x87|\xe2\x80\xaf|\xe2\x81\x9f|\xe3\x80\x80",
+            " ", x, useBytes = TRUE)
+  x <- gsub("<c2><a0>|<U\\+00A0>|<U\\+202F>", " ", x, useBytes = TRUE)
+  # read.csv(check.names = TRUE) turns spaces and invalid characters into
+  # dots, so "Bombus terrestris" becomes "Bombus.terrestris". Treat dots,
+  # spaces and underscores as equivalent word separators.
+  x <- gsub("[[:space:]._]+", "_", x)
+  gsub("^_+|_+$", "", x)
 }
 
 .is_binary <- function(v) {
@@ -391,8 +436,10 @@ si_connectance <- function(x) {
 .resolve_mask <- function(r, mask) {
   n <- terra::ncell(r)
   if (is.null(mask)) {
-    v <- terra::values(r[[1]], mat = FALSE)
-    return(!is.na(v))
+    # A cell is analysed if any species has a prediction there. Using a single
+    # layer would silently drop every cell that happens to be NA in that layer.
+    v <- terra::values(r, mat = TRUE)
+    return(rowSums(!is.na(v)) > 0)
   }
   # An explicit mask defines the analysis grid exactly. It is deliberately NOT
   # intersected with the first layer's non-NA cells: different species have

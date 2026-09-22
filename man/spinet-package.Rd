@@ -69,7 +69,7 @@ Useful links:
 
 }
 \author{
-\strong{Maintainer}: Ehsan Rahimi \email{ehsanrahimi666@gmail.com} (\href{https://orcid.org/0000-0001-5715-5748}{ORCID})
+\strong{Maintainer}: Ehsan Rahimi \email{ehsanrahimi666@gmail.com}
 
 Authors:
 \itemize{

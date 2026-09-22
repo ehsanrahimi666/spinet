@@ -13,8 +13,12 @@ si_rule_phenology(
 }
 \arguments{
 \item{phenology}{An [si_phenology_simulate()] object, a list with `mu_A`,
-`sd_A`, `mu_B`, `sd_B`, or a pair of month-by-species presence matrices
-supplied as `list(A = , B = )`.}
+`sd_A`, `mu_B`, `sd_B`, or a pair of observed activity matrices supplied as
+`list(A = , B = )`. Activity matrices must have **time periods in rows and
+species in columns** (the layout returned by
+[si_phenology_from_records()]), and both must have the same number of
+rows. The returned rule is always level-A by level-B, matching every other
+`si_rule_*` function.}
 
 \item{slice}{`"current"` or `"future"`.}
 
@@ -40,4 +44,12 @@ c(now = mean(now$matrix > 0), future = mean(fut$matrix > 0))
 # links that open and close
 c(opened = sum(fut$matrix > 0 & now$matrix == 0),
   closed = sum(fut$matrix == 0 & now$matrix > 0))
+
+# observed activity matrices: months in rows, species in columns
+A <- matrix(0L, 12, 5, dimnames = list(month.abb, paste0("plant", 1:5)))
+B <- matrix(0L, 12, 3, dimnames = list(month.abb, paste0("bird", 1:3)))
+A[1:6, ] <- 1L; B[4:9, ] <- 1L          # every pair shares Apr-Jun
+obs <- si_rule_phenology(list(A = A, B = B), threshold = 0.1)
+dim(obs$matrix)                          # 5 x 3, level A by level B
+all(obs$matrix == 1)                     # TRUE: every pair overlaps
 }

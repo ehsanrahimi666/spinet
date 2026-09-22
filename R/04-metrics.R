@@ -112,7 +112,8 @@ si_degenerate <- function(field, warn = TRUE) {
 #' *Oikos*, 117, 1227--1239.
 #' @export
 si_nodf <- function(m) {
-  b <- (as.matrix(m) > 0) * 1
+  m <- as.matrix(m); m[is.na(m)] <- 0
+  b <- (m > 0) * 1
   if (nrow(b) < 2 || ncol(b) < 2 || sum(b) == 0) return(NA_real_)
   half <- function(x) {
     d <- rowSums(x)
@@ -148,7 +149,7 @@ si_nodf <- function(m) {
 #' *Environmental Modelling & Software*, 26, 173--178.
 #' @export
 si_wnodf <- function(m) {
-  w <- as.matrix(m)
+  w <- as.matrix(m); w[is.na(w)] <- 0
   if (nrow(w) < 2 || ncol(w) < 2 || sum(w > 0) == 0) return(NA_real_)
   half <- function(x) {
     d <- rowSums(x > 0); n <- nrow(x); tot <- 0; cnt <- 0
@@ -238,7 +239,7 @@ si_h2prime <- function(m, components = FALSE) {
 #' si_evenness(matrix(1, 4, 4))   # perfectly even
 #' @export
 si_evenness <- function(m) {
-  w <- as.matrix(m); p <- w[w > 0]
+  w <- as.matrix(m); w[is.na(w)] <- 0; p <- w[w > 0]
   if (length(p) < 2) return(NA_real_)
   p <- p / sum(p)
   -sum(p * log(p)) / log(length(p))
@@ -266,7 +267,7 @@ si_evenness <- function(m) {
 #' @export
 si_modularity <- function(m) {
   if (!requireNamespace("igraph", quietly = TRUE)) return(NA_real_)
-  w <- as.matrix(m)
+  w <- as.matrix(m); w[is.na(w)] <- 0
   if (nrow(w) < 2 || ncol(w) < 2 || sum(w > 0) < 2) return(NA_real_)
   nr <- nrow(w); nc <- ncol(w)
   full <- matrix(0, nr + nc, nr + nc)

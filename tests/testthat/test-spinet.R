@@ -249,3 +249,153 @@ test_that("edge cases return NA rather than failing", {
   f <- si_example_field(n_cells = 5)
   expect_error(si_local(f, 999), "out of range")
 })
+
+# ---------------------------------------------------------------------------
+# Regression tests for the two bugs found by running the code on real
+# plant-hummingbird data. The original suite covered only simulated phenology
+# and never passed `observed` to si_forbidden(), so both slipped through.
+# ---------------------------------------------------------------------------
+
+test_that("si_rule_phenology keeps level-A by level-B orientation for observed data", {
+  nA <- 7L; nB <- 4L                      # deliberately non-square
+  A <- matrix(0L, 12, nA, dimnames = list(month.abb, paste0("plant", 1:nA)))
+  B <- matrix(0L, 12, nB, dimnames = list(month.abb, paste0("bird", 1:nB)))
+  A[1:6, ] <- 1L; B[4:9, ] <- 1L          # every pair shares Apr-Jun
+  r <- si_rule_phenology(list(A = A, B = B), threshold = 0.1)
+
+  expect_equal(dim(r$matrix), c(nA, nB))
+  expect_equal(rownames(r$matrix), colnames(A))
+  expect_equal(colnames(r$matrix), colnames(B))
+  expect_true(all(r$matrix == 1))         # was 0 everywhere before the fix
+
+  # and the silent downstream failure it caused
+  n <- 6L
+  A2 <- matrix(0L, 12, n, dimnames = list(month.abb, paste0("plant", 1:n)))
+  B2 <- matrix(0L, 12, n, dimnames = list(month.abb, paste0("bird", 1:n)))
+  A2[1:6, ] <- 1L; B2[4:9, ] <- 1L
+  mw <- si_metaweb(si_rule_phenology(list(A = A2, B = B2), threshold = 0.1)$matrix,
+                   names_A = colnames(A2), names_B = colnames(B2))
+  expect_equal(sum(mw$matrix > 0), n * n)  # was 0 before the fix
+})
+
+test_that("si_rule_phenology grades partial overlap and rejects mismatched periods", {
+  A <- matrix(0L, 12, 2, dimnames = list(month.abb, c("early", "late")))
+  B <- matrix(0L, 12, 2, dimnames = list(month.abb, c("early", "late")))
+  A[1:4, 1] <- 1L; A[7:12, 2] <- 1L
+  B[1:4, 1] <- 1L; B[7:12, 2] <- 1L
+  g <- si_rule_phenology(list(A = A, B = B), graded = TRUE)$matrix
+  expect_equal(unname(diag(g)), c(1, 1))
+  expect_equal(unname(g[1, 2]), 0)
+  expect_error(si_rule_phenology(list(A = matrix(1, 12, 3), B = matrix(1, 6, 2))),
+               "same number of rows")
+})
+
+test_that("si_forbidden(observed=) overrides by default and filters on request", {
+  trait <- matrix(c(1,0,0,1, 0,0,1,1, 1,1,0,0, 0,0,0,1, 1,0,1,0), 5, 4,
+                  byrow = TRUE,
+                  dimnames = list(paste0("p", 1:5), paste0("a", 1:4)))
+  obs <- matrix(0, 5, 4, dimnames = dimnames(trait))
+  obs["p1", "a2"] <- 1        # documented, but the trait rule forbids it
+  obs["p3", "a1"] <- 1        # documented and trait-permitted
+
+  ov <- si_forbidden(traits = trait, observed = obs)
+  expect_equal(ov$observed_action, "override")
+  expect_equal(unname(ov$matrix["p1", "a2"]), 1)   # rescued by the record
+  expect_equal(unname(ov$matrix["p1", "a1"]), 1)   # rule-permitted, undocumented
+  expect_equal(ov$rescued_links, 1L)
+  expect_equal(sum(ov$matrix > 0), sum(trait > 0) + 1)
+
+  ft <- si_forbidden(traits = trait, observed = obs, observed_action = "filter")
+  expect_equal(ft$observed_action, "filter")
+  expect_equal(unname(ft$matrix["p1", "a2"]), 0)   # not trait-permitted
+  expect_equal(unname(ft$matrix["p3", "a1"]), 1)
+  expect_equal(sum(ft$matrix > 0), sum(trait > 0 & obs > 0))
+
+  # override survives binarisation of a graded rule
+  gr <- si_forbidden(traits = trait * 0.4, observed = obs,
+                     binarise = TRUE, threshold = 0.5)
+  expect_equal(unname(gr$matrix["p1", "a2"]), 1)
+  expect_equal(sum(gr$matrix > 0), 2)
+})
+
+test_that("every si_rule_* returns a level-A by level-B matrix", {
+  nA <- 7L; nB <- 4L
+  d <- function(x) dim(x$matrix)
+  expect_equal(d(si_rule_morphology(runif(nA), runif(nB))), c(nA, nB))
+  expect_equal(d(si_rule_morphology(runif(nA), runif(nB), rule = "gower")), c(nA, nB))
+  expect_equal(d(si_rule_elevation(runif(nA), runif(nA) + 1,
+                                   runif(nB), runif(nB) + 1)), c(nA, nB))
+  expect_equal(d(si_rule_abundance(runif(nA), runif(nB))), c(nA, nB))
+  expect_equal(d(si_rule_taxonomy(rep(c("F1", "F2"), length.out = nA),
+                                  list(a1 = "F1"), paste0("a", 1:nB))), c(nA, nB))
+  expect_equal(d(si_rule_phenology(si_phenology_simulate(nA, nB, seed = 1))), c(nA, nB))
+  expect_equal(dim(si_phenology_overlap(si_phenology_simulate(nA, nB, seed = 1))),
+               c(nA, nB))
+})
+
+# ---------------------------------------------------------------------------
+# Input handling: missing values, name matching and threshold edge cases
+# ---------------------------------------------------------------------------
+
+test_that("species names match across files, spreadsheets and read.csv", {
+  nn <- spinet:::.norm_names
+  expect_equal(nn("Toxomerus_calceolatus.."), "Toxomerus_calceolatus")  # check.names
+  expect_equal(nn("Bombus terrestris"), "Bombus_terrestris")
+  expect_equal(nn("Villa_"), "Villa")
+  expect_equal(nn("Apis\u00a0mellifera"), "Apis_mellifera")               # no-break space
+  m <- matrix(1, 2, 2, dimnames = list(c("p1", "p2"), c("a1", "zz")))
+  expect_warning(si_metaweb(m, names_A = c("p1", "p2"), names_B = c("a1", "a2")),
+                 "no row or column")
+})
+
+test_that("rasters with missing values are handled without silent cell loss", {
+  r <- terra::rast(nrows = 10, ncols = 10, nlyrs = 2)
+  terra::values(r) <- runif(200); names(r) <- c("s1", "s2")
+  r[[1]][1:20] <- NA                       # first layer missing, second not
+  expect_equal(nrow(si_stack(r, quiet = TRUE)$values), 100L)
+
+  b <- terra::rast(nrows = 10, ncols = 10, nlyrs = 2)
+  terra::values(b) <- runif(200); names(b) <- c("b1", "b2")
+  b[[1]][1:30] <- NA; b[[2]][1:30] <- NA
+  f <- suppressMessages(si_overlap(si_stack(r, quiet = TRUE),
+                                   si_stack(b, quiet = TRUE), check = FALSE))
+  expect_equal(f$n_cells, 70L)             # aligned on shared cells
+  expect_error(si_stack(matrix(c(NA, .5, .2, .9), 2), na_value = NA), "na_value")
+})
+
+test_that("input validation catches common mistakes", {
+  expect_warning(si_stack(matrix(c(0, 250, 1000, 40), 2)), "outside")
+  expect_error(si_stack(matrix(runif(8), 4, dimnames = list(NULL, c("sp", "sp")))),
+               "Duplicated")
+  expect_error(si_simulate_climate(si_simulate_species(3, 10, 10, seed = 1),
+                                   "shift", distance = 15), "distance")
+  expect_warning(e <- si_rule_elevation(1000, 200, 300, 800)$matrix, "swapped")
+  expect_equal(e[1, 1], 1)
+})
+
+test_that("quantile thresholds never make zero-suitability cells present", {
+  v <- cbind(sparse = c(rep(0, 95), runif(5, .5, 1)), dense = runif(100))
+  th <- suppressWarnings(si_threshold(si_stack(v), "quantile", 0.9))
+  expect_lte(sum(th$values[, "sparse"]), 5)
+  expect_warning(si_threshold(si_stack(v), "quantile", 0.9), "threshold of zero")
+})
+
+test_that("metrics, robustness and coextinction ignore missing and isolated species", {
+  mm <- matrix(c(1, NA, 1, 1, 0, 1, 1, 1, 0), 3)
+  expect_false(is.na(si_nodf(mm)))
+  expect_false(is.na(si_evenness(mm)))
+  W <- si_simulate_metaweb(10, 8, .3, seed = 2)$matrix
+  W0 <- cbind(W, empty = 0)
+  expect_equal(si_robustness(W, n_sim = 30, seed = 1)$robustness,
+               si_robustness(W0, n_sim = 30, seed = 1)$robustness)
+  cx <- si_coextinction(W0, rnorm(10), rnorm(9), n_sim = 5)
+  expect_lt(cx$coextinct_B[2], 1)
+})
+
+test_that("si_forbidden aligns named rules by species, not by position", {
+  r1 <- matrix(c(1, 0, 0, 1), 2, dimnames = list(c("p1", "p2"), c("a1", "a2")))
+  fl <- si_forbidden(a = r1, b = r1[c(2, 1), ])
+  expect_equal(unname(fl$matrix), unname(r1))
+  bad <- r1; rownames(bad) <- c("p1", "p9")
+  expect_error(si_forbidden(a = r1, b = bad), "same species")
+})

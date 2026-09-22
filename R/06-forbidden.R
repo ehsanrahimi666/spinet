@@ -11,9 +11,17 @@
 #'
 #' @param ... Rule matrices, or objects returned by the `si_rule_*` functions.
 #'   Named arguments are retained for attribution by [si_forbidden_partition()].
-#' @param observed Optional observed metaweb (an [si_metaweb()] or matrix). When
-#'   supplied it is treated as an additional rule, which is how a documented
-#'   interaction record overrides trait-based inference.
+#' @param observed Optional record of documented interactions (an
+#'   [si_metaweb()] or a matrix), aligned to the same species as the rules.
+#' @param observed_action How `observed` is used. `"override"` (the default)
+#'   applies it *after* the rules: a documented pair is permitted whatever the
+#'   rules say, and undocumented pairs are left to the rules. This is the right
+#'   choice when the record is trusted evidence and the rules are inference,
+#'   because a trait rule that contradicts an observation is wrong about that
+#'   pair. `"filter"` instead treats the record as one more rule, so a pair
+#'   that was never recorded is forbidden however plausible the traits make it;
+#'   use this only when the record is close to complete, since absence of
+#'   evidence is otherwise read as evidence of absence.
 #' @param combine How to combine rules: `"product"` (the Hadamard product used
 #'   by Vazquez and others, 2009, and the default), `"min"` (the most
 #'   restrictive rule wins) or `"mean"`.
@@ -21,13 +29,24 @@
 #' @param threshold Numeric cut used when `binarise = TRUE`.
 #'
 #' @return An object of class `si_forbidden`, carrying the combined `metaweb`,
-#'   the individual `rules`, and per-rule statistics.
+#'   the individual `rules`, per-rule statistics, and — when `observed` is
+#'   supplied — the number of documented links and, under `"override"`, the
+#'   number of them that the rules would otherwise have forbidden
+#'   (`rescued_links`).
 #'
 #' @details
 #' Rules multiply, so a link survives only if every rule permits it. This is
 #' the standard treatment of multiple interaction determinants, in which
 #' abundance, phenological overlap, spatial overlap and trait matching each
 #' contribute a probability matrix that is combined element-wise.
+#'
+#' Documented interactions are handled separately from rules, because they are
+#' evidence rather than inference. Under the default `observed_action =
+#' "override"` they are applied after the rules have been combined and, if
+#' requested, binarised, so a recorded interaction is never removed by a trait
+#' or phenology rule that disagrees with it. `si_forbidden()` reports how many
+#' links this rescued, which is a useful diagnostic: a large number means the
+#' rules and the record disagree badly and the rules should be revisited.
 #'
 #' @examples
 #' set.seed(1)
@@ -42,6 +61,20 @@
 #'   combine    = "product", binarise = TRUE)
 #' fl
 #' si_forbidden_partition(fl)
+#'
+#' # documented interactions, some of which the trait rule would forbid
+#' obs <- matrix(0, nA, nB)
+#' obs[cbind(sample(nA, 6), sample(nB, 6))] <- 1
+#'
+#' # default: the record wins where it disagrees with the rules
+#' ov <- si_forbidden(morphology = si_rule_morphology(tr$A, tb$B), observed = obs)
+#' c(rules_only = sum(si_rule_morphology(tr$A, tb$B)$matrix > 0),
+#'   with_record = sum(ov$matrix > 0), rescued = ov$rescued_links)
+#'
+#' # filter: only documented pairs survive
+#' ft <- si_forbidden(morphology = si_rule_morphology(tr$A, tb$B), observed = obs,
+#'                    observed_action = "filter")
+#' sum(ft$matrix > 0)
 #' @references
 #' Vazquez, D.P., Blüthgen, N., Cagnolo, L. & Chacoff, N.P. (2009) Uniting
 #' pattern and process in plant-animal mutualistic networks: a review.
@@ -50,13 +83,21 @@
 #'   [si_rule_elevation()], [si_rule_taxonomy()], [si_rule_custom()]
 #' @export
 si_forbidden <- function(..., observed = NULL,
+                         observed_action = c("override", "filter"),
                          combine = c("product", "min", "mean"),
                          binarise = FALSE, threshold = 0.5) {
   combine <- match.arg(combine)
+  observed_action <- match.arg(observed_action)
   rules <- list(...)
+  obs <- NULL
   if (!is.null(observed)) {
-    om <- if (inherits(observed, "si_metaweb")) observed$matrix else as.matrix(observed)
-    rules$observed <- (om > 0) * 1
+    om <- .constraint_matrix(observed)
+    obs <- (om > 0) * 1
+    # "filter" makes the record a rule like any other, so an undocumented pair
+    # is forbidden. "override" applies it after the rules, so a documented pair
+    # is permitted whatever the rules say, and undocumented pairs are left to
+    # the rules.
+    if (observed_action == "filter") rules$observed <- obs
   }
   if (!length(rules))
     stop("Supply at least one rule matrix (see ?si_rule_phenology).",
@@ -71,6 +112,32 @@ si_forbidden <- function(..., observed = NULL,
   if (is.null(names(rules)) || any(names(rules) == ""))
     names(rules) <- paste0("rule", seq_along(rules))
 
+  # Rules built by different functions need not list species in the same
+  # order. When every rule carries species names, align them to the first
+  # rule by name rather than by position; refuse to combine rules whose
+  # species sets differ.
+  named <- vapply(rules, function(r) !is.null(rownames(r)) && !is.null(colnames(r)),
+                  logical(1))
+  if (all(named) && length(rules) > 1) {
+    rn <- .norm_names(rownames(rules[[1]])); cn <- .norm_names(colnames(rules[[1]]))
+    for (k in seq_along(rules)[-1]) {
+      ri <- match(rn, .norm_names(rownames(rules[[k]])))
+      ci <- match(cn, .norm_names(colnames(rules[[k]])))
+      if (anyNA(ri) || anyNA(ci))
+        stop("Rule '", names(rules)[k], "' does not contain the same species as ",
+             "rule '", names(rules)[1], "'.", call. = FALSE)
+      rules[[k]] <- rules[[k]][ri, ci, drop = FALSE]
+    }
+    if (!is.null(obs) && !is.null(rownames(obs)) && !is.null(colnames(obs))) {
+      ri <- match(rn, .norm_names(rownames(obs))); ci <- match(cn, .norm_names(colnames(obs)))
+      if (!anyNA(ri) && !anyNA(ci)) obs <- obs[ri, ci, drop = FALSE]
+      if (observed_action == "filter") rules$observed <- obs
+    }
+  } else if (length(rules) > 1 && any(named) && !all(named)) {
+    warning("Some rules carry species names and others do not; rules were ",
+            "combined by position.", call. = FALSE)
+  }
+
   arr <- simplify2array(rules)
   M <- switch(combine,
     product = apply(arr, 1:2, prod),
@@ -78,6 +145,16 @@ si_forbidden <- function(..., observed = NULL,
     mean    = apply(arr, 1:2, mean))
   if (binarise) M <- (M >= threshold) * 1
   dimnames(M) <- dimnames(rules[[1]])
+
+  rescued <- 0L
+  if (!is.null(obs) && observed_action == "override") {
+    if (!identical(dim(obs), dim(M)))
+      stop("`observed` is ", nrow(obs), " x ", ncol(obs), " but the rules are ",
+           nrow(M), " x ", ncol(M), ".", call. = FALSE)
+    rescued <- sum(obs > 0 & M == 0)
+    M <- pmax(M, obs)
+    dimnames(M) <- dimnames(rules[[1]])
+  }
 
   stats <- data.frame(
     rule = names(rules),
@@ -87,7 +164,10 @@ si_forbidden <- function(..., observed = NULL,
 
   structure(list(metaweb = new_si_metaweb(M, all(M == 1)),
                  matrix = M, rules = rules, stats = stats,
-                 combine = combine, binarised = binarise),
+                 combine = combine, binarised = binarise,
+                 observed_action = if (is.null(obs)) NA_character_ else observed_action,
+                 observed_links = if (is.null(obs)) 0L else sum(obs > 0),
+                 rescued_links = rescued),
             class = "si_forbidden")
 }
 
@@ -103,6 +183,13 @@ print.si_forbidden <- function(x, ...) {
   for (i in seq_len(nrow(s)))
     cat(sprintf("     %-14s forbids %5.1f%% of all pairs\n",
                 s$rule[i], 100 * s$forbidden[i]))
+  if (!is.na(x$observed_action)) {
+    cat("  observed   : ", x$observed_links, " documented links, applied as \"",
+        x$observed_action, "\"\n", sep = "")
+    if (identical(x$observed_action, "override"))
+      cat("               ", x$rescued_links,
+          " of them would have been forbidden by the rules\n", sep = "")
+  }
   invisible(x)
 }
 
@@ -163,8 +250,12 @@ si_forbidden_partition <- function(forbidden) {
 #' change partners, and interaction rewiring becomes possible.
 #'
 #' @param phenology An [si_phenology_simulate()] object, a list with `mu_A`,
-#'   `sd_A`, `mu_B`, `sd_B`, or a pair of month-by-species presence matrices
-#'   supplied as `list(A = , B = )`.
+#'   `sd_A`, `mu_B`, `sd_B`, or a pair of observed activity matrices supplied as
+#'   `list(A = , B = )`. Activity matrices must have **time periods in rows and
+#'   species in columns** (the layout returned by
+#'   [si_phenology_from_records()]), and both must have the same number of
+#'   rows. The returned rule is always level-A by level-B, matching every other
+#'   `si_rule_*` function.
 #' @param slice `"current"` or `"future"`.
 #' @param threshold Numeric on 0--1. Overlap at or below this is forbidden.
 #' @param graded Logical. Return the overlap itself as a graded rule rather
@@ -178,14 +269,30 @@ si_forbidden_partition <- function(forbidden) {
 #' # links that open and close
 #' c(opened = sum(fut$matrix > 0 & now$matrix == 0),
 #'   closed = sum(fut$matrix == 0 & now$matrix > 0))
+#'
+#' # observed activity matrices: months in rows, species in columns
+#' A <- matrix(0L, 12, 5, dimnames = list(month.abb, paste0("plant", 1:5)))
+#' B <- matrix(0L, 12, 3, dimnames = list(month.abb, paste0("bird", 1:3)))
+#' A[1:6, ] <- 1L; B[4:9, ] <- 1L          # every pair shares Apr-Jun
+#' obs <- si_rule_phenology(list(A = A, B = B), threshold = 0.1)
+#' dim(obs$matrix)                          # 5 x 3, level A by level B
+#' all(obs$matrix == 1)                     # TRUE: every pair overlaps
 #' @export
 si_rule_phenology <- function(phenology, slice = c("current", "future"),
                               threshold = 0.1, graded = FALSE) {
   slice <- match.arg(slice)
   O <- if (is.list(phenology) && !is.null(phenology$A) && is.matrix(phenology$A)) {
     a <- phenology$A > 0; b <- phenology$B > 0
+    if (nrow(a) != nrow(b))
+      stop("`phenology$A` and `phenology$B` must have the same number of rows ",
+           "(time periods). Got ", nrow(a), " and ", nrow(b), ".\n",
+           "  Both must be period-by-species matrices, periods in rows.",
+           call. = FALSE)
+    # Szymkiewicz-Simpson overlap: shared periods / periods of the less active
+    # partner. crossprod(a, b) is already level-A by level-B; do not transpose.
     ov <- crossprod(a, b) / pmax(1, outer(colSums(a), colSums(b), pmin))
-    t(ov)
+    dimnames(ov) <- list(colnames(phenology$A), colnames(phenology$B))
+    ov
   } else {
     si_phenology_overlap(phenology, slice)
   }
@@ -260,6 +367,16 @@ si_rule_morphology <- function(trait_A, trait_B,
 #' @export
 si_rule_elevation <- function(lo_A, hi_A, lo_B, hi_B, min_overlap = 0,
                               na_permit = TRUE) {
+  # limits supplied in the wrong order are swapped rather than silently
+  # producing an empty range
+  swapA <- !is.na(lo_A) & !is.na(hi_A) & lo_A > hi_A
+  swapB <- !is.na(lo_B) & !is.na(hi_B) & lo_B > hi_B
+  if (any(swapA) || any(swapB)) {
+    warning(sum(swapA) + sum(swapB), " elevational range(s) had the lower limit ",
+            "above the upper limit and were swapped.", call. = FALSE)
+    tmp <- lo_A[swapA]; lo_A[swapA] <- hi_A[swapA]; hi_A[swapA] <- tmp
+    tmp <- lo_B[swapB]; lo_B[swapB] <- hi_B[swapB]; hi_B[swapB] <- tmp
+  }
   ov <- outer(hi_A, lo_B, "-")
   ov2 <- outer(lo_A, hi_B, "-")
   m <- (ov >= min_overlap & -ov2 >= min_overlap) * 1

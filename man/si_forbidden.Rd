@@ -7,6 +7,7 @@
 si_forbidden(
   ...,
   observed = NULL,
+  observed_action = c("override", "filter"),
   combine = c("product", "min", "mean"),
   binarise = FALSE,
   threshold = 0.5
@@ -16,9 +17,18 @@ si_forbidden(
 \item{...}{Rule matrices, or objects returned by the `si_rule_*` functions.
 Named arguments are retained for attribution by [si_forbidden_partition()].}
 
-\item{observed}{Optional observed metaweb (an [si_metaweb()] or matrix). When
-supplied it is treated as an additional rule, which is how a documented
-interaction record overrides trait-based inference.}
+\item{observed}{Optional record of documented interactions (an
+[si_metaweb()] or a matrix), aligned to the same species as the rules.}
+
+\item{observed_action}{How `observed` is used. `"override"` (the default)
+applies it *after* the rules: a documented pair is permitted whatever the
+rules say, and undocumented pairs are left to the rules. This is the right
+choice when the record is trusted evidence and the rules are inference,
+because a trait rule that contradicts an observation is wrong about that
+pair. `"filter"` instead treats the record as one more rule, so a pair
+that was never recorded is forbidden however plausible the traits make it;
+use this only when the record is close to complete, since absence of
+evidence is otherwise read as evidence of absence.}
 
 \item{combine}{How to combine rules: `"product"` (the Hadamard product used
 by Vazquez and others, 2009, and the default), `"min"` (the most
@@ -30,7 +40,10 @@ restrictive rule wins) or `"mean"`.}
 }
 \value{
 An object of class `si_forbidden`, carrying the combined `metaweb`,
-  the individual `rules`, and per-rule statistics.
+  the individual `rules`, per-rule statistics, and — when `observed` is
+  supplied — the number of documented links and, under `"override"`, the
+  number of them that the rules would otherwise have forbidden
+  (`rescued_links`).
 }
 \description{
 Combines any number of rule matrices into the constraint layer used by
@@ -43,6 +56,14 @@ Rules multiply, so a link survives only if every rule permits it. This is
 the standard treatment of multiple interaction determinants, in which
 abundance, phenological overlap, spatial overlap and trait matching each
 contribute a probability matrix that is combined element-wise.
+
+Documented interactions are handled separately from rules, because they are
+evidence rather than inference. Under the default `observed_action =
+"override"` they are applied after the rules have been combined and, if
+requested, binarised, so a recorded interaction is never removed by a trait
+or phenology rule that disagrees with it. `si_forbidden()` reports how many
+links this rescued, which is a useful diagnostic: a large number means the
+rules and the record disagree badly and the rules should be revisited.
 }
 \examples{
 set.seed(1)
@@ -57,6 +78,20 @@ fl <- si_forbidden(
   combine    = "product", binarise = TRUE)
 fl
 si_forbidden_partition(fl)
+
+# documented interactions, some of which the trait rule would forbid
+obs <- matrix(0, nA, nB)
+obs[cbind(sample(nA, 6), sample(nB, 6))] <- 1
+
+# default: the record wins where it disagrees with the rules
+ov <- si_forbidden(morphology = si_rule_morphology(tr$A, tb$B), observed = obs)
+c(rules_only = sum(si_rule_morphology(tr$A, tb$B)$matrix > 0),
+  with_record = sum(ov$matrix > 0), rescued = ov$rescued_links)
+
+# filter: only documented pairs survive
+ft <- si_forbidden(morphology = si_rule_morphology(tr$A, tb$B), observed = obs,
+                   observed_action = "filter")
+sum(ft$matrix > 0)
 }
 \references{
 Vazquez, D.P., Blüthgen, N., Cagnolo, L. & Chacoff, N.P. (2009) Uniting

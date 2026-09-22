@@ -91,8 +91,10 @@ si_beta <- function(current, future, cells = NULL,
     shp <- intersect(Lc$A, Lf$A); shb <- intersect(Lc$B, Lf$B)
     ck <- .cross_keys(shp, shb, Lc$nB)
     Oc <- Lc$links[Lc$links %in% ck]; Of <- Lf$links[Lf$links %in% ck]
-    bOS <- if (!length(Oc) && !length(Of)) NA_real_ else bfun(Oc, Of)
-    bST <- if (is.na(bWN) || is.na(bOS)) NA_real_ else bWN - bOS
+    # No links among shared species at either time: nothing can rewire, so
+    # all interaction turnover is species turnover (beta_OS = 0).
+    bOS <- if (is.na(bWN)) NA_real_ else if (!length(Oc) && !length(Of)) 0 else bfun(Oc, Of)
+    bST <- if (is.na(bWN)) NA_real_ else bWN - bOS
     c(beta_S = bS, beta_WN = bWN, beta_ST = bST, beta_OS = bOS,
       links_current = nc, links_future = nf,
       shared_links = length(intersect(Lc$links, Lf$links)))

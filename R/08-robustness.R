@@ -103,6 +103,18 @@ si_robustness <- function(web, cell = NULL, remove = c("A", "B"),
     web <- .local_matrix(web, cell, drop = TRUE)
   }
   W <- as.matrix(web); W[is.na(W)] <- 0
+  # Species with no interactions cannot lose a partner. Leaving them in would
+  # count them as secondary extinctions at the first step and bias R
+  # downward, so they are removed, as in standard attack-tolerance analyses.
+  keep_r <- rowSums(W > 0) > 0; keep_c <- colSums(W > 0) > 0
+  if (!all(keep_r) || !all(keep_c)) {
+    if (!is.null(rewiring)) rewiring <- as.matrix(rewiring)[keep_r, keep_c, drop = FALSE]
+    if (!is.null(suitability_change) && remove == "A")
+      suitability_change <- suitability_change[keep_r]
+    if (!is.null(suitability_change) && remove == "B")
+      suitability_change <- suitability_change[keep_c]
+    W <- W[keep_r, keep_c, drop = FALSE]
+  }
   if (!is.character(sequence)) {
     order_fixed <- as.integer(sequence); sequence <- "custom"
   } else {
@@ -288,8 +300,15 @@ si_coextinction <- function(web, change_A, change_B, threshold = 1,
                             interaction = si_interaction("pollinatedBy"),
                             seed = NULL) {
   W0 <- as.matrix(web); W0[is.na(W0)] <- 0
+  if (length(change_A) != nrow(W0) || length(change_B) != ncol(W0))
+    stop("`change_A` and `change_B` must have one value per row and column of ",
+         "`web` (", nrow(W0), " and ", ncol(W0), ").", call. = FALSE)
+  # isolated species cannot coextinct; drop them with their change values
+  keep_r <- rowSums(W0 > 0) > 0; keep_c <- colSums(W0 > 0) > 0
+  if (!is.null(rewiring)) rewiring <- as.matrix(rewiring)[keep_r, keep_c, drop = FALSE]
+  change_A <- change_A[keep_r]; change_B <- change_B[keep_c]
+  W0 <- W0[keep_r, keep_c, drop = FALSE]
   nA <- nrow(W0); nB <- ncol(W0)
-  stopifnot(length(change_A) == nA, length(change_B) == nB)
   if (!is.null(seed)) set.seed(seed)
   rule <- si_cascade_rule(interaction)
 

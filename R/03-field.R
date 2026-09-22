@@ -96,11 +96,27 @@ si_overlap <- function(A, B, metaweb = NULL,
   if (!inherits(interaction, "si_interaction"))
     stop("`interaction` must be an si_interaction object; see ?si_interaction",
          call. = FALSE)
-  if (nrow(A$values) != nrow(B$values))
-    stop("The two stacks cover different numbers of cells (", nrow(A$values),
-         " vs ", nrow(B$values), ").\n  Build every stack with the same ",
-         "`mask` argument so that cell i means the same place in each.",
-         call. = FALSE)
+  if (!identical(as.integer(A$cells), as.integer(B$cells))) {
+    same_grid <- !is.null(A$template) && !is.null(B$template) &&
+      identical(A$template$dim, B$template$dim) &&
+      isTRUE(all.equal(A$template$ext, B$template$ext))
+    if (!same_grid)
+      stop("The two stacks cover different cells (", nrow(A$values), " vs ",
+           nrow(B$values), ") and do not share a raster grid, so their cells ",
+           "cannot be aligned.\n  Build every stack with the same `mask` so ",
+           "that cell i means the same place in each.", call. = FALSE)
+    # Same grid, different valid cells: keep the cells present in both, in
+    # raster order, so that row k refers to the same place in each stack.
+    common <- sort(intersect(A$cells, B$cells))
+    if (!length(common))
+      stop("The two stacks share a grid but have no cells in common.",
+           call. = FALSE)
+    message("Aligning stacks on ", length(common), " shared cells (",
+            nrow(A$values) - length(common), " level-A and ",
+            nrow(B$values) - length(common), " level-B cells dropped).")
+    A$values <- A$values[match(common, A$cells), , drop = FALSE]; A$cells <- common
+    B$values <- B$values[match(common, B$cells), , drop = FALSE]; B$cells <- common
+  }
   if (!is.numeric(floor) || length(floor) != 1L || floor < 0)
     stop("`floor` must be a single non-negative number.", call. = FALSE)
 
@@ -130,7 +146,7 @@ si_overlap <- function(A, B, metaweb = NULL,
     return(m)
   }
   if (inherits(metaweb, "si_forbidden")) metaweb <- metaweb$metaweb
-  m <- if (inherits(metaweb, "si_metaweb")) metaweb$matrix else as.matrix(metaweb)
+  m <- .constraint_matrix(metaweb)
   storage.mode(m) <- "double"
   if (is.null(rownames(m))) rownames(m) <- nA
   if (is.null(colnames(m))) colnames(m) <- nB
@@ -291,7 +307,18 @@ si_threshold <- function(x, rule = c("fixed", "quantile", "prevalence", "mean"),
                  else rep(stats::quantile(v, value), ncol(v)),
     prevalence = if (per_species) apply(v, 2, stats::quantile, probs = 1 - value)
                  else rep(stats::quantile(v, 1 - value), ncol(v)))
-  out <- (v >= matrix(thr, nrow(v), ncol(v), byrow = TRUE)) * 1
+  # Presence requires positive suitability. Without this, a quantile- or
+  # prevalence-based threshold for a species absent from most of the grid
+  # resolves to 0 and every cell, including those with zero suitability,
+  # would be scored as present.
+  out <- (v >= matrix(thr, nrow(v), ncol(v), byrow = TRUE) & v > 0) * 1
+  zero_thr <- x$names[thr <= 0]
+  if (length(zero_thr) && rule %in% c("quantile", "prevalence"))
+    warning(length(zero_thr), " species have a ", rule, " threshold of zero ",
+            "because most of their cells have zero suitability (e.g. ",
+            paste(utils::head(zero_thr, 3), collapse = ", "),
+            "); presence was restricted to cells with positive suitability.",
+            call. = FALSE)
   dim(out) <- dim(v)
   dimnames(out) <- list(NULL, x$names)
   x$values <- out

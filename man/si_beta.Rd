@@ -50,6 +50,10 @@ shifted phenology (see [si_rule_phenology()]). `si_beta()` warns when the two
 fields share a constraint layer.
 }
 
+\details{
+In cells where no links exist among the species present at both times, including networks that are lost or newly formed, there is nothing to rewire: \code{beta_OS} is 0 and \code{beta_ST} equals \code{beta_WN}, so the additive partition holds in every cell.
+
+}
 \examples{
 set.seed(6)
 st_now <- si_simulate_species(12, nrow = 20, ncol = 20, seed = 6)

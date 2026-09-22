@@ -7,7 +7,7 @@ authors:
     given-names: Ehsan
   - family-names: Jung
     given-names: Chuleui
-version: 0.1.0
+version: 0.1.2
 license: GPL-3.0
 repository-code: "https://github.com/ehsanrahimi666/spinet"
 abstract: >-
